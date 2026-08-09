@@ -30,6 +30,23 @@ npm run build
 npm run start
 ```
 
+## Checks
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
+
+Tests are plain TypeScript run by Node's built-in test runner — no test
+framework, no extra dependencies. They cover the cycle rules, the stats
+rollups (including the timezone handling behind "today") and the datastore's
+concurrency and failure behaviour. Node 22.18+ is required, since the runner
+strips the types itself.
+
+CI runs all four steps on every pull request.
+
 ## How it works
 
 **No accounts.** On first visit the browser generates a random id and stores it
@@ -83,6 +100,7 @@ src/
   components/    TimerDial, CycleTrack, TaskPanel, StatsPanel, SettingsPanel
   hooks/         usePomodoro (the timer), useSettings
   lib/           db, stats, pomodoro (cycle rules), client, persistent-store
+tests/           pomodoro, stats, db
 ```
 
 Built with Next.js 16 (App Router), React 19, TypeScript and Tailwind CSS v4.
