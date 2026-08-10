@@ -1,9 +1,7 @@
 import type { NextRequest } from "next/server";
 
 import { getUserId, jsonError, readJsonBody } from "@/lib/api";
-import { mutate, newId, read } from "@/lib/db";
-import { withStats } from "@/lib/stats";
-import type { Task } from "@/lib/types";
+import { createTask, listTasks } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -14,21 +12,7 @@ export async function GET(request: NextRequest) {
   const includeArchived =
     request.nextUrl.searchParams.get("includeArchived") === "true";
 
-  const tasks = await read((db) => {
-    const sessions = db.sessions.filter((session) => session.userId === userId);
-    return db.tasks
-      .filter((task) => task.userId === userId)
-      .filter((task) => includeArchived || !task.archived)
-      .map((task) => withStats(task, sessions))
-      .sort((a, b) => {
-        // Open tasks first, newest first within each group.
-        if (Boolean(a.completedAt) !== Boolean(b.completedAt)) {
-          return a.completedAt ? 1 : -1;
-        }
-        return b.createdAt.localeCompare(a.createdAt);
-      });
-  });
-
+  const tasks = await listTasks(userId, includeArchived);
   return Response.json({ tasks });
 }
 
@@ -46,20 +30,6 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const now = new Date().toISOString();
-  const task: Task = {
-    id: newId(),
-    userId,
-    title,
-    createdAt: now,
-    updatedAt: now,
-    completedAt: null,
-    archived: false,
-  };
-
-  await mutate((db) => {
-    db.tasks.push(task);
-  });
-
-  return Response.json({ task: withStats(task, []) }, { status: 201 });
+  const task = await createTask(userId, title);
+  return Response.json({ task }, { status: 201 });
 }

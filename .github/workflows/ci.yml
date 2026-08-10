@@ -15,6 +15,24 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    services:
+      # The query tests run against a real Postgres rather than a fake, so the
+      # SQL, constraints and ON DELETE behaviour are actually exercised.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pomodoro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -32,5 +50,7 @@ jobs:
       - run: npm run typecheck
 
       - run: npm test
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/pomodoro_test
 
       - run: npm run build

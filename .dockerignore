@@ -4,7 +4,6 @@ node_modules
 .next
 out
 build
-data
 tests
 npm-debug.log*
 .env*

@@ -1,10 +1,4 @@
-import type {
-  DailyTotal,
-  SessionRecord,
-  Stats,
-  Task,
-  TaskWithStats,
-} from "./types";
+import type { DailyTotal, SessionRecord, Stats } from "./types";
 
 const DAY_MS = 86_400_000;
 
@@ -16,25 +10,6 @@ const DAY_MS = 86_400_000;
 export function dayKey(date: Date, tzOffsetMinutes = 0): string {
   const shifted = new Date(date.getTime() - tzOffsetMinutes * 60_000);
   return shifted.toISOString().slice(0, 10);
-}
-
-export function withStats(task: Task, sessions: SessionRecord[]): TaskWithStats {
-  const focus = sessions.filter(
-    (session) => session.taskId === task.id && session.kind === "focus",
-  );
-  return {
-    ...task,
-    stats: {
-      focusMs: focus.reduce((total, session) => total + session.durationMs, 0),
-      focusSessions: focus.length,
-      completedFocusSessions: focus.filter((session) => session.completed).length,
-      lastActiveAt: focus.reduce<string | null>(
-        (latest, session) =>
-          latest === null || session.endedAt > latest ? session.endedAt : latest,
-        null,
-      ),
-    },
-  };
 }
 
 export function buildStats(

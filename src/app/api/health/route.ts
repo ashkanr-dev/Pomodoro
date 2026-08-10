@@ -1,29 +1,24 @@
-import { checkWritable, read } from "@/lib/db";
+import { checkDatabase } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Liveness/readiness probe for the host platform.
+ * Liveness/readiness probe.
  *
- * It proves the data volume is actually writable rather than just returning
- * 200, because the most likely way this app breaks in production is a missing
- * or read-only volume — and that failure otherwise looks exactly like a fresh
- * install right up until someone's tasks vanish on redeploy.
+ * It runs a real query through the schema bootstrap rather than returning a
+ * bare 200, so a missing `DATABASE_URL`, an unreachable database, or one the
+ * app can't create its tables in all surface here instead of as a 500 the
+ * first time someone tries to save a task.
  */
 export async function GET() {
   try {
-    await checkWritable();
-    const counts = await read((db) => ({
-      tasks: db.tasks.length,
-      sessions: db.sessions.length,
-    }));
+    const counts = await checkDatabase();
     return Response.json({ status: "ok", ...counts });
   } catch (cause) {
     return Response.json(
       {
         status: "error",
-        error:
-          cause instanceof Error ? cause.message : "data directory unwritable",
+        error: cause instanceof Error ? cause.message : "database unavailable",
       },
       { status: 503 },
     );

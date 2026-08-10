@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Emits .next/standalone with a self-contained server.js and only the
-  // node_modules it actually needs, which is what the container image runs.
-  output: "standalone",
+  // Standalone output is what the container image runs. Vercel builds through
+  // its own output pipeline, so leave it alone there.
+  output: process.env.VERCEL ? undefined : "standalone",
 };
 
 export default nextConfig;

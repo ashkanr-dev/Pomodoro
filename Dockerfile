@@ -21,15 +21,12 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0 \
-    POMODORO_DATA_DIR=/data
+    HOSTNAME=0.0.0.0
 
-# Run unprivileged, and give the data volume to that user so the first write
-# doesn't fail on a permission error.
+# State lives in Postgres, so the container itself is disposable. Supply
+# DATABASE_URL at run time.
 RUN addgroup -g 1001 -S nodejs \
- && adduser -u 1001 -S nextjs -G nodejs \
- && mkdir -p /data \
- && chown -R nextjs:nodejs /data
+ && adduser -u 1001 -S nextjs -G nodejs
 
 # `output: "standalone"` bundles server.js with only the node_modules it needs.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
@@ -37,8 +34,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
 
-# Mount a real volume here — without one, every task is lost on redeploy.
-VOLUME ["/data"]
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

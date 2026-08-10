@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildStats, dayKey, withStats } from "../src/lib/stats.ts";
-import type { PhaseKind, SessionRecord, Task } from "../src/lib/types.ts";
+import { buildStats, dayKey } from "../src/lib/stats.ts";
+import type { PhaseKind, SessionRecord } from "../src/lib/types.ts";
 
 const MINUTE = 60_000;
 
@@ -23,50 +23,6 @@ function session(overrides: Partial<SessionRecord> = {}): SessionRecord {
     ...overrides,
   };
 }
-
-const task: Task = {
-  id: "task-1",
-  userId: "user",
-  title: "Write the report",
-  createdAt: "2026-08-09T09:00:00.000Z",
-  updatedAt: "2026-08-09T09:00:00.000Z",
-  completedAt: null,
-  archived: false,
-};
-
-test("per-task totals count only that task's focus intervals", () => {
-  const result = withStats(task, [
-    session(),
-    session({ durationMs: 10 * MINUTE, completed: false }),
-    session({ taskId: "task-2", taskTitle: "Something else" }),
-    // Breaks are never attributed to a task.
-    session({ kind: "longBreak", taskId: null, taskTitle: null }),
-  ]);
-
-  assert.equal(result.stats.focusMs, 35 * MINUTE);
-  assert.equal(result.stats.focusSessions, 2);
-  assert.equal(result.stats.completedFocusSessions, 1);
-});
-
-test("lastActiveAt is the most recent focus interval on the task", () => {
-  const result = withStats(task, [
-    session({ endedAt: "2026-08-07T10:25:00.000Z" }),
-    session({ endedAt: "2026-08-09T18:00:00.000Z" }),
-    session({ endedAt: "2026-08-08T11:00:00.000Z" }),
-  ]);
-
-  assert.equal(result.stats.lastActiveAt, "2026-08-09T18:00:00.000Z");
-});
-
-test("a task with no logged time reports zeroes, not nulls", () => {
-  const result = withStats(task, []);
-  assert.deepEqual(result.stats, {
-    focusMs: 0,
-    focusSessions: 0,
-    completedFocusSessions: 0,
-    lastActiveAt: null,
-  });
-});
 
 test("totals separate focus from break time", () => {
   const stats = buildStats(

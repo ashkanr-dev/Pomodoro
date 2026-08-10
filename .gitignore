@@ -40,8 +40,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local JSON datastore
-/data/
-
 # local agent settings
 /.claude/settings.local.json
