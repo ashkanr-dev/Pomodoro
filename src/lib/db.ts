@@ -1,85 +1,140 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
-
-import type { SessionRecord, Task } from "./types";
+import { Pool, type PoolClient, type QueryResultRow } from "pg";
 
 /**
- * Tiny JSON-file datastore.
+ * Postgres connection and schema bootstrap.
  *
- * The app has no login and is meant to run as a single process, so a file is
- * plenty. Everything goes through `mutate()`, which serialises access on a
- * promise chain and writes atomically (tmp file + rename), so concurrent
- * requests can't interleave a read-modify-write.
+ * The app runs on serverless functions, where every instance opens its own
+ * pool and instances come and go constantly. Keep `max` small and point
+ * `DATABASE_URL` at the provider's *pooled* endpoint (pgbouncer on Neon,
+ * Supabase's pooler) or connections will pile up faster than they're reclaimed.
  */
 
-interface Database {
-  tasks: Task[];
-  sessions: SessionRecord[];
-}
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS tasks (
+    id           uuid        PRIMARY KEY,
+    user_id      text        NOT NULL,
+    title        text        NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz,
+    archived     boolean     NOT NULL DEFAULT false
+  );
 
-const EMPTY_DB: Database = { tasks: [], sessions: [] };
+  CREATE INDEX IF NOT EXISTS tasks_user_id_idx ON tasks (user_id);
 
-const DATA_DIR =
-  process.env.POMODORO_DATA_DIR ?? path.join(process.cwd(), "data");
-const DB_FILE = path.join(DATA_DIR, "db.json");
+  CREATE TABLE IF NOT EXISTS sessions (
+    id          uuid        PRIMARY KEY,
+    user_id     text        NOT NULL,
+    -- Deleting a task keeps its history: the link drops, the snapshot stays.
+    task_id     uuid        REFERENCES tasks (id) ON DELETE SET NULL,
+    task_title  text,
+    kind        text        NOT NULL CHECK (kind IN ('focus', 'shortBreak', 'longBreak')),
+    step_index  integer     NOT NULL,
+    round       integer     NOT NULL,
+    planned_ms  bigint      NOT NULL,
+    duration_ms bigint      NOT NULL,
+    started_at  timestamptz NOT NULL,
+    ended_at    timestamptz NOT NULL,
+    completed   boolean     NOT NULL
+  );
 
-let queue: Promise<unknown> = Promise.resolve();
-let cache: Database | null = null;
+  CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id);
+  CREATE INDEX IF NOT EXISTS sessions_task_id_idx ON sessions (task_id);
+`;
 
-function isDatabase(value: unknown): value is Database {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<Database>;
-  return Array.isArray(candidate.tasks) && Array.isArray(candidate.sessions);
-}
+/** Arbitrary but stable key for the advisory lock guarding schema creation. */
+const SCHEMA_LOCK_KEY = 4_872_119_034;
 
-async function load(): Promise<Database> {
-  if (cache) return cache;
-  try {
-    const raw = await readFile(DB_FILE, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    cache = isDatabase(parsed)
-      ? { tasks: parsed.tasks, sessions: parsed.sessions }
-      : { ...EMPTY_DB };
-  } catch {
-    // Missing or unreadable file: start from an empty database.
-    cache = { ...EMPTY_DB };
+let pool: Pool | null = null;
+
+export function getPool(): Pool {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error(
+      "DATABASE_URL is not set. Point it at a Postgres database — see the README.",
+    );
   }
-  return cache;
-}
 
-async function persist(db: Database): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  const tmp = `${DB_FILE}.${randomUUID()}.tmp`;
-  await writeFile(tmp, JSON.stringify(db, null, 2), "utf8");
-  await rename(tmp, DB_FILE);
-  cache = db;
-}
-
-/** Runs `fn` against the database without writing anything back. */
-export function read<T>(fn: (db: Database) => T): Promise<T> {
-  const next = queue.then(async () => fn(await load()));
-  queue = next.catch(() => undefined);
-  return next;
-}
-
-/** Runs `fn` against the database and persists the result. */
-export function mutate<T>(fn: (db: Database) => T | Promise<T>): Promise<T> {
-  const next = queue.then(async () => {
-    const current = await load();
-    // Work on a copy so a throwing `fn` cannot leave the cache half-updated.
-    const draft: Database = {
-      tasks: [...current.tasks],
-      sessions: [...current.sessions],
-    };
-    const result = await fn(draft);
-    await persist(draft);
-    return result;
+  pool ??= new Pool({
+    connectionString,
+    max: Number(process.env.PG_POOL_MAX ?? 3),
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 10_000,
+    // Escape hatch for providers serving certificates this client can't chain.
+    ssl:
+      process.env.PG_SSL_NO_VERIFY === "1"
+        ? { rejectUnauthorized: false }
+        : undefined,
   });
-  queue = next.catch(() => undefined);
-  return next;
+
+  return pool;
 }
 
-export function newId(): string {
-  return randomUUID();
+let schemaReady: Promise<void> | null = null;
+
+/**
+ * Creates the schema if it isn't there yet, once per process.
+ *
+ * `IF NOT EXISTS` alone still races when several cold instances boot at the
+ * same time, so the DDL runs under an advisory lock. On failure the cached
+ * promise is cleared so the next request retries rather than inheriting it.
+ */
+export function ensureSchema(): Promise<void> {
+  schemaReady ??= (async () => {
+    const client: PoolClient = await getPool().connect();
+    try {
+      await client.query("SELECT pg_advisory_lock($1)", [SCHEMA_LOCK_KEY]);
+      try {
+        await client.query(SCHEMA);
+      } finally {
+        await client.query("SELECT pg_advisory_unlock($1)", [SCHEMA_LOCK_KEY]);
+      }
+    } finally {
+      client.release();
+    }
+  })().catch((cause: unknown) => {
+    schemaReady = null;
+    throw cause;
+  });
+
+  return schemaReady;
+}
+
+/** Runs a query, bootstrapping the schema first. */
+export async function query<T extends QueryResultRow>(
+  text: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  await ensureSchema();
+  const result = await getPool().query<T>(text, params);
+  return result.rows;
+}
+
+/**
+ * Verifies the database is reachable and writable, for health probes.
+ *
+ * It does a real round-trip through the schema bootstrap rather than a bare
+ * `SELECT 1`, because a reachable database the app has no rights to create
+ * tables in would otherwise look perfectly healthy.
+ */
+export async function checkDatabase(): Promise<{
+  tasks: number;
+  sessions: number;
+}> {
+  const rows = await query<{ tasks: string; sessions: string }>(
+    `SELECT (SELECT count(*) FROM tasks)    AS tasks,
+            (SELECT count(*) FROM sessions) AS sessions`,
+  );
+  return {
+    tasks: Number(rows[0]?.tasks ?? 0),
+    sessions: Number(rows[0]?.sessions ?? 0),
+  };
+}
+
+/** Closes the pool. Used by tests; serverless instances just get torn down. */
+export async function closePool(): Promise<void> {
+  const existing = pool;
+  pool = null;
+  schemaReady = null;
+  await existing?.end();
 }

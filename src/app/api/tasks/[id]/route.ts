@@ -1,9 +1,7 @@
 import type { NextRequest } from "next/server";
 
 import { getUserId, jsonError, readJsonBody } from "@/lib/api";
-import { mutate, read } from "@/lib/db";
-import { withStats } from "@/lib/stats";
-import type { Task } from "@/lib/types";
+import { deleteTask, getTask, updateTask } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -14,19 +12,7 @@ export async function GET(
   ctx: RouteContext<"/api/tasks/[id]">,
 ) {
   const { id } = await ctx.params;
-  const userId = getUserId(request);
-
-  const task = await read((db) => {
-    const found = db.tasks.find(
-      (candidate) => candidate.id === id && candidate.userId === userId,
-    );
-    return found
-      ? withStats(
-          found,
-          db.sessions.filter((session) => session.userId === userId),
-        )
-      : null;
-  });
+  const task = await getTask(getUserId(request), id);
 
   if (!task) return jsonError("Task not found.", 404);
   return Response.json({ task });
@@ -41,8 +27,9 @@ export async function PATCH(
   const body = await readJsonBody(request);
   if (!body) return jsonError("Expected a JSON object body.", 400);
 
+  let title: string | undefined;
   if (body.title !== undefined) {
-    const title = typeof body.title === "string" ? body.title.trim() : "";
+    title = typeof body.title === "string" ? body.title.trim() : "";
     if (!title) return jsonError("A task needs a title.", 400);
     if (title.length > MAX_TITLE_LENGTH) {
       return jsonError(
@@ -52,38 +39,14 @@ export async function PATCH(
     }
   }
 
-  const result = await mutate((db) => {
-    const index = db.tasks.findIndex(
-      (candidate) => candidate.id === id && candidate.userId === userId,
-    );
-    if (index === -1) return null;
-
-    const current = db.tasks[index];
-    const updated: Task = {
-      ...current,
-      title:
-        typeof body.title === "string" ? body.title.trim() : current.title,
-      completedAt:
-        body.done === undefined
-          ? current.completedAt
-          : body.done
-            ? (current.completedAt ?? new Date().toISOString())
-            : null,
-      archived:
-        body.archived === undefined
-          ? current.archived
-          : Boolean(body.archived),
-      updatedAt: new Date().toISOString(),
-    };
-    db.tasks[index] = updated;
-    return withStats(
-      updated,
-      db.sessions.filter((session) => session.userId === userId),
-    );
+  const task = await updateTask(userId, id, {
+    title,
+    done: body.done === undefined ? undefined : Boolean(body.done),
+    archived: body.archived === undefined ? undefined : Boolean(body.archived),
   });
 
-  if (!result) return jsonError("Task not found.", 404);
-  return Response.json({ task: result });
+  if (!task) return jsonError("Task not found.", 404);
+  return Response.json({ task });
 }
 
 export async function DELETE(
@@ -91,24 +54,8 @@ export async function DELETE(
   ctx: RouteContext<"/api/tasks/[id]">,
 ) {
   const { id } = await ctx.params;
-  const userId = getUserId(request);
-
-  const deleted = await mutate((db) => {
-    const index = db.tasks.findIndex(
-      (candidate) => candidate.id === id && candidate.userId === userId,
-    );
-    if (index === -1) return false;
-
-    db.tasks.splice(index, 1);
-    // Keep the history: detach the sessions but hold on to the title snapshot
-    // so past focus time still shows up in the stats.
-    db.sessions = db.sessions.map((session) =>
-      session.taskId === id && session.userId === userId
-        ? { ...session, taskId: null }
-        : session,
-    );
-    return true;
-  });
+  // Sessions survive: the foreign key nulls the link and keeps the snapshot.
+  const deleted = await deleteTask(getUserId(request), id);
 
   if (!deleted) return jsonError("Task not found.", 404);
   return new Response(null, { status: 204 });

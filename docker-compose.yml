@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pomodoro
+      POSTGRES_PASSWORD: pomodoro
+      POSTGRES_DB: pomodoro
+    volumes:
+      # The app is disposable; this volume is the part that must persist.
+      - pomodoro-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pomodoro"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    image: pomodoro-tracker
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://pomodoro:pomodoro@db:5432/pomodoro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pomodoro-db:
