@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,7 +11,7 @@ import type { Task } from "../src/lib/types.ts";
 const dataDir = await mkdtemp(path.join(tmpdir(), "pomodoro-db-"));
 process.env.POMODORO_DATA_DIR = dataDir;
 
-const { mutate, newId, read } = await import("../src/lib/db.ts");
+const { checkWritable, mutate, newId, read } = await import("../src/lib/db.ts");
 
 function task(title: string): Task {
   return {
@@ -66,6 +66,38 @@ test("concurrent writes all survive instead of clobbering each other", async () 
     await readFile(path.join(dataDir, "db.json"), "utf8"),
   ) as { tasks: Task[] };
   assert.equal(onDisk.tasks.length, 25);
+});
+
+test("the writability probe succeeds on a usable data directory", async () => {
+  await assert.doesNotReject(checkWritable());
+});
+
+test("the writability probe cleans up after itself", async () => {
+  // Health checks run on a schedule; leaked probe files would pile up forever.
+  await checkWritable();
+  await checkWritable();
+  await checkWritable();
+
+  const leftovers = (await readdir(dataDir)).filter((name) =>
+    name.startsWith(".probe-"),
+  );
+  assert.deepEqual(leftovers, []);
+});
+
+test("the writability probe rejects when the directory cannot be created", async () => {
+  // The data directory is resolved at import time, so the override has to be
+  // in place before the fresh copy of the module loads. A regular file where a
+  // directory belongs is what an unmounted volume looks like from inside the
+  // container.
+  process.env.POMODORO_DATA_DIR = path.join(dataDir, "db.json", "nested");
+  try {
+    const { checkWritable: check } = await import(
+      `../src/lib/db.ts?unusable=${Date.now()}`
+    );
+    await assert.rejects(check(), /ENOTDIR|ENOENT|EACCES/);
+  } finally {
+    process.env.POMODORO_DATA_DIR = dataDir;
+  }
 });
 
 test("a failed write leaves the database untouched", async () => {

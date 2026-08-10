@@ -47,6 +47,59 @@ strips the types itself.
 
 CI runs all four steps on every pull request.
 
+## Deploying
+
+The app keeps its data in a file on disk, so it needs a host that gives it a
+**persistent volume**. Everything else is standard.
+
+> **Serverless hosts (Vercel, Netlify Functions, Cloudflare Workers) will not
+> work as-is.** Their filesystems are ephemeral and per-instance, so tasks
+> would appear to save and then silently vanish on the next deploy or the next
+> request that lands elsewhere. Deploying there means replacing `src/lib/db.ts`
+> with a hosted database first.
+
+### Docker
+
+```bash
+docker compose up --build      # http://localhost:3000
+```
+
+Or without compose:
+
+```bash
+docker build -t pomodoro-tracker .
+docker run -p 3000:3000 -v pomodoro-data:/data pomodoro-tracker
+```
+
+The image builds Next's standalone output, runs as a non-root user, and stores
+data in `/data`. **Mount a volume there** — without one, the container still
+runs, but every task is lost when it restarts.
+
+### Any container host
+
+Fly.io, Railway, Render, ECS, or a VPS all work the same way: build the
+Dockerfile, attach a persistent disk at `/data`, and expose port 3000. On
+Fly.io that's a `[mounts]` entry pointing at `/data`; on Render or Railway it's
+a disk with `/data` as the mount path.
+
+### Health checks
+
+`GET /api/health` returns `200 {"status":"ok",…}` when the data volume is
+writable and `503` when it isn't. Point the platform's health check at it: a
+missing volume otherwise looks exactly like a fresh install, right up until
+someone's history disappears. The Dockerfile wires this into `HEALTHCHECK`
+already.
+
+### Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POMODORO_DATA_DIR` | `./data` (`/data` in the image) | Where `db.json` is written |
+| `PORT` | `3000` | Port the server listens on |
+| `HOSTNAME` | `0.0.0.0` in the image | Bind address |
+
+No secrets, no API keys, no database URL — there's nothing else to configure.
+
 ## How it works
 
 **No accounts.** On first visit the browser generates a random id and stores it

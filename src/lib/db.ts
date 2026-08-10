@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { SessionRecord, Task } from "./types";
@@ -82,4 +82,19 @@ export function mutate<T>(fn: (db: Database) => T | Promise<T>): Promise<T> {
 
 export function newId(): string {
   return randomUUID();
+}
+
+/**
+ * Throws unless the data directory exists and accepts writes.
+ *
+ * Reads deliberately fall back to an empty database so a first run works with
+ * no file present — which means a missing or read-only volume looks identical
+ * to a fresh install. Health probes need to tell those apart, so this actually
+ * writes.
+ */
+export async function checkWritable(): Promise<void> {
+  await mkdir(DATA_DIR, { recursive: true });
+  const probe = path.join(DATA_DIR, `.probe-${randomUUID()}`);
+  await writeFile(probe, "ok", "utf8");
+  await rm(probe, { force: true });
 }

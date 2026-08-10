@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+.next
+out
+build
+data
+tests
+npm-debug.log*
+.env*
+.DS_Store
+*.tsbuildinfo
+.claude
+README.md
